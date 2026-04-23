@@ -7,7 +7,7 @@
     "api/chat.ts": {
       "maxDuration": 60
     },
-    "api/_warmup.ts": {
+    "api/warmup.ts": {
       "maxDuration": 5
     }
   }

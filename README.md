@@ -6,7 +6,7 @@ Vercel proxy for the Wildex mobile app. Hides the Anthropic API key, rate-limits
 
 - `POST /api/identify` — Claude Opus 4.7 vision. Body: `{ imageBase64, mediaType? }`. Returns `{ matchedId, commonName, latinName, confidence, iucnGuess }`.
 - `POST /api/chat` — Claude Opus 4.7 streaming. Server-sent events (`data: {"type":"delta","text":"..."}` then `data: {"type":"done"}`). Body: `{ wilder: {...}, messages: [...] }`.
-- `GET /api/_warmup` — connection warm-up. Returns 200 with no body.
+- `GET /api/warmup` — connection warm-up. Returns 200 with no body.
 
 All three run on Vercel Node 22.x (Fluid Compute).
 
