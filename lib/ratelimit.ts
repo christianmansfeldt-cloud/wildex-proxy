@@ -1,0 +1,62 @@
+import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
+
+let _ratelimit: Ratelimit | null = null;
+let _redis: Redis | null = null;
+
+function getRedis(): Redis | null {
+  if (_redis) return _redis;
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  _redis = new Redis({ url, token });
+  return _redis;
+}
+
+function getRatelimit(): Ratelimit | null {
+  if (_ratelimit) return _ratelimit;
+  const redis = getRedis();
+  if (!redis) return null;
+  _ratelimit = new Ratelimit({
+    redis,
+    limiter: Ratelimit.slidingWindow(60, "1 h"),
+    analytics: false,
+    prefix: "wildex:rl",
+  });
+  return _ratelimit;
+}
+
+export async function checkRateLimit(ip: string): Promise<{ ok: boolean; remaining: number }> {
+  const rl = getRatelimit();
+  if (!rl) return { ok: true, remaining: 999 };
+  const { success, remaining } = await rl.limit(ip);
+  return { ok: success, remaining };
+}
+
+const DAILY_BUDGET_USD = Number(process.env.MAX_DAILY_USD ?? "25");
+
+export async function checkBudget(estimatedCostUsd: number): Promise<{ ok: boolean; spent: number }> {
+  const redis = getRedis();
+  if (!redis) return { ok: true, spent: 0 };
+  const dayKey = `wildex:budget:${new Date().toISOString().slice(0, 10)}`;
+  const cents = Math.ceil(estimatedCostUsd * 100);
+  try {
+    const newSpentCents = await redis.incrby(dayKey, cents);
+    await redis.expire(dayKey, 60 * 60 * 26);
+    const spent = newSpentCents / 100;
+    return { ok: spent <= DAILY_BUDGET_USD, spent };
+  } catch {
+    return { ok: false, spent: DAILY_BUDGET_USD };
+  }
+}
+
+export function clientIp(req: Request): string {
+  const realIp = req.headers.get("x-real-ip");
+  if (realIp) return realIp.trim();
+  const fwd = req.headers.get("x-forwarded-for");
+  if (fwd) {
+    const first = fwd.split(",")[0];
+    if (first) return first.trim();
+  }
+  return "unknown";
+}

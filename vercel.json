@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/identify.ts": {
+      "runtime": "nodejs22.x",
+      "maxDuration": 30
+    },
+    "api/chat.ts": {
+      "runtime": "nodejs22.x",
+      "maxDuration": 60
+    },
+    "api/_warmup.ts": {
+      "runtime": "nodejs22.x",
+      "maxDuration": 5
+    }
+  }
+}
