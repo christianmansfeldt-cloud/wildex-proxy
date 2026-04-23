@@ -1,5 +1,6 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import type { VercelRequest } from "@vercel/node";
 
 let _ratelimit: Ratelimit | null = null;
 let _redis: Redis | null = null;
@@ -50,10 +51,15 @@ export async function checkBudget(estimatedCostUsd: number): Promise<{ ok: boole
   }
 }
 
-export function clientIp(req: Request): string {
-  const realIp = req.headers.get("x-real-ip");
+function headerValue(v: string | string[] | undefined): string | undefined {
+  if (Array.isArray(v)) return v[0];
+  return v;
+}
+
+export function clientIp(req: VercelRequest): string {
+  const realIp = headerValue(req.headers["x-real-ip"]);
   if (realIp) return realIp.trim();
-  const fwd = req.headers.get("x-forwarded-for");
+  const fwd = headerValue(req.headers["x-forwarded-for"]);
   if (fwd) {
     const first = fwd.split(",")[0];
     if (first) return first.trim();

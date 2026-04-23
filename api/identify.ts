@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { CURATED_SPECIES, CURATED_SPECIES_BLOCK } from "../lib/species.js";
 import { checkBudget, checkRateLimit, clientIp } from "../lib/ratelimit.js";
 
@@ -59,44 +60,45 @@ function parseModelResponse(text: string): IdentifyResult {
   return { matchedId, commonName, latinName, confidence, iucnGuess };
 }
 
-export default async function handler(req: Request): Promise<Response> {
+export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   if (req.method !== "POST") {
-    return Response.json({ error: "method_not_allowed" }, { status: 405 });
+    res.status(405).json({ error: "method_not_allowed" });
+    return;
   }
 
   const ip = clientIp(req);
   const rl = await checkRateLimit(ip);
   if (!rl.ok) {
-    return Response.json({ error: "rate_limited" }, { status: 429 });
+    res.status(429).json({ error: "rate_limited" });
+    return;
   }
 
   const budget = await checkBudget(ESTIMATED_COST_PER_CALL_USD);
   if (!budget.ok) {
-    return Response.json({ error: "budget_exceeded", spent: budget.spent }, { status: 503 });
+    res.status(503).json({ error: "budget_exceeded", spent: budget.spent });
+    return;
   }
 
-  let body: { imageBase64?: string; mediaType?: string };
-  try {
-    body = (await req.json()) as { imageBase64?: string; mediaType?: string };
-  } catch {
-    return Response.json({ error: "invalid_json" }, { status: 400 });
-  }
-
+  const body = (req.body ?? {}) as { imageBase64?: string; mediaType?: string };
   const imageBase64 = body.imageBase64;
   if (typeof imageBase64 !== "string" || imageBase64.length < 100) {
-    return Response.json({ error: "missing_image" }, { status: 400 });
+    res.status(400).json({ error: "missing_image" });
+    return;
   }
   if (imageBase64.length > 2_500_000) {
-    return Response.json({ error: "image_too_large" }, { status: 413 });
+    res.status(413).json({ error: "image_too_large" });
+    return;
   }
   const mediaType = body.mediaType ?? "image/jpeg";
   if (!/^image\/(jpeg|png|webp|gif)$/.test(mediaType)) {
-    return Response.json({ error: "unsupported_media_type" }, { status: 415 });
+    res.status(415).json({ error: "unsupported_media_type" });
+    return;
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return Response.json({ error: "server_misconfigured" }, { status: 500 });
+    res.status(500).json({ error: "server_misconfigured" });
+    return;
   }
 
   const client = new Anthropic({ apiKey });
@@ -132,19 +134,16 @@ export default async function handler(req: Request): Promise<Response> {
 
     const textBlock = message.content.find((c) => c.type === "text");
     if (!textBlock || textBlock.type !== "text") {
-      return Response.json({ error: "no_text_response" }, { status: 502 });
+      res.status(502).json({ error: "no_text_response" });
+      return;
     }
 
     const result = parseModelResponse(textBlock.text);
-    return Response.json(result, {
-      status: 200,
-      headers: {
-        "cache-control": "no-store",
-        "x-wildex-budget-spent": String(budget.spent.toFixed(2)),
-      },
-    });
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("x-wildex-budget-spent", String(budget.spent.toFixed(2)));
+    res.status(200).json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown_error";
-    return Response.json({ error: "claude_failed", detail: msg }, { status: 502 });
+    res.status(502).json({ error: "claude_failed", detail: msg });
   }
 }

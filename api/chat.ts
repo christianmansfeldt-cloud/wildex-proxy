@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { checkBudget, checkRateLimit, clientIp } from "../lib/ratelimit.js";
 
 const MODEL = "claude-opus-4-7";
@@ -25,29 +26,26 @@ interface ChatRequest {
   messages?: Array<{ role: "user" | "assistant"; content: string }>;
 }
 
-export default async function handler(req: Request): Promise<Response> {
+export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   if (req.method !== "POST") {
-    return Response.json({ error: "method_not_allowed" }, { status: 405 });
+    res.status(405).json({ error: "method_not_allowed" });
+    return;
   }
 
   const ip = clientIp(req);
   const rl = await checkRateLimit(ip);
   if (!rl.ok) {
-    return Response.json({ error: "rate_limited" }, { status: 429 });
+    res.status(429).json({ error: "rate_limited" });
+    return;
   }
 
   const budget = await checkBudget(ESTIMATED_COST_PER_CALL_USD);
   if (!budget.ok) {
-    return Response.json({ error: "budget_exceeded", spent: budget.spent }, { status: 503 });
+    res.status(503).json({ error: "budget_exceeded", spent: budget.spent });
+    return;
   }
 
-  let body: ChatRequest;
-  try {
-    body = (await req.json()) as ChatRequest;
-  } catch {
-    return Response.json({ error: "invalid_json" }, { status: 400 });
-  }
-
+  const body = (req.body ?? {}) as ChatRequest;
   const w = body.wilder ?? {};
   const messages = Array.isArray(body.messages) ? body.messages : [];
   if (
@@ -58,16 +56,23 @@ export default async function handler(req: Request): Promise<Response> {
     messages.length === 0 ||
     messages.length > 12
   ) {
-    return Response.json({ error: "invalid_request" }, { status: 400 });
+    res.status(400).json({ error: "invalid_request" });
+    return;
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return Response.json({ error: "server_misconfigured" }, { status: 500 });
+    res.status(500).json({ error: "server_misconfigured" });
+    return;
   }
 
   const client = new Anthropic({ apiKey });
   const system = SYSTEM_PROMPT_TEMPLATE(w.commonName, w.latinName, w.iucnStatus, w.lore);
+
+  res.setHeader("content-type", "text/event-stream");
+  res.setHeader("cache-control", "no-cache, no-transform");
+  res.setHeader("connection", "keep-alive");
+  res.flushHeaders?.();
 
   try {
     const stream = await client.messages.stream({
@@ -77,38 +82,19 @@ export default async function handler(req: Request): Promise<Response> {
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     });
 
-    const encoder = new TextEncoder();
-    const sse = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const event of stream) {
-            if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-              const data = JSON.stringify({ type: "delta", text: event.delta.text });
-              controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-            } else if (event.type === "message_stop") {
-              controller.enqueue(encoder.encode(`data: {"type":"done"}\n\n`));
-            }
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "stream_error";
-          const data = JSON.stringify({ type: "error", error: msg });
-          controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-        } finally {
-          controller.close();
-        }
-      },
-    });
-
-    return new Response(sse, {
-      status: 200,
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache, no-transform",
-        connection: "keep-alive",
-      },
-    });
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        const data = JSON.stringify({ type: "delta", text: event.delta.text });
+        res.write(`data: ${data}\n\n`);
+      } else if (event.type === "message_stop") {
+        res.write(`data: {"type":"done"}\n\n`);
+      }
+    }
+    res.end();
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "unknown_error";
-    return Response.json({ error: "claude_failed", detail: msg }, { status: 502 });
+    const msg = err instanceof Error ? err.message : "stream_error";
+    const data = JSON.stringify({ type: "error", error: msg });
+    res.write(`data: ${data}\n\n`);
+    res.end();
   }
 }
