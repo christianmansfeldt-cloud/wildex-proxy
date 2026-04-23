@@ -4,6 +4,9 @@
   "description": "Wildex Vercel proxy for Claude Opus 4.7 vision + chat",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "deploy": "vercel deploy --prod",
     "dev": "vercel dev",
