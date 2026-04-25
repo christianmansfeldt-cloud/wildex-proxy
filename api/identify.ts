@@ -40,7 +40,12 @@ Rules:
 - If no animal is visible at all, return commonName="No animal detected", confidence=0.0, iucnGuess="DD", isEgg=false.
 - If the subject is a stuffed toy or illustration of an animal, identify the depicted species and set confidence accordingly (treat plushies as their real species but cap confidence around 0.6).
 - iucnGuess is your best estimate; we will not use it for legal claims.
-- isEgg: set TRUE when the photo's primary subject is an egg (chicken egg in a carton, decorated egg, bird's nest with visible eggs, painted/Easter egg, etc.). The egg path takes priority over species ID — even if a parent bird is visible nearby with the egg, set isEgg=true. The user's app starts a 3-7 day incubation timer when isEgg is true. When isEgg=true, set commonName="Speckled Egg", latinName="Ovum incognitum", confidence=0.85, iucnGuess="LC". Otherwise FALSE.
+
+isEgg detection (SECONDARY signal — never overrides species ID):
+- Set isEgg=true ONLY when the photo's primary subject is unmistakably an egg AND no live animal is visible. Examples: chicken egg in a carton, decorated egg on a table, painted Easter egg, bird's egg in a bowl.
+- If an animal is visible — even partially, even out of focus, even in the background — return isEgg=false and identify the animal normally. A bird sitting on its egg → isEgg=false, identify the bird.
+- If unsure, return isEgg=false. False negatives are fine (the user just sees a regular reveal). False positives hurt (the user catches a "Speckled Egg" instead of their pet).
+- ALL response fields (matchedId, commonName, latinName, confidence, iucnGuess) MUST be set normally regardless of isEgg. Identify what you actually see in the photo. The client uses isEgg as a routing flag and reads commonName/etc. only when isEgg=false.
 
 Respond with JSON only. No markdown fences. No commentary.`;
 
