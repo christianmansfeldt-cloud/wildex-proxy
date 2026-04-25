@@ -30,15 +30,17 @@ ALWAYS respond as a single JSON object with EXACTLY this shape and no surroundin
   "commonName": string,
   "latinName": string,
   "confidence": number,
-  "iucnGuess": "LC" | "NT" | "VU" | "EN" | "CR" | "EW" | "EX" | "DD"
+  "iucnGuess": "LC" | "NT" | "VU" | "EN" | "CR" | "EW" | "EX" | "DD",
+  "isEgg": boolean
 }
 
 Rules:
 - matchedId MUST be one of the catalogue ids OR null. Never invent ids.
 - confidence is 0.0 to 1.0. Below 0.4 means "really not sure".
-- If no animal is visible at all, return commonName="No animal detected", confidence=0.0, iucnGuess="DD".
+- If no animal is visible at all, return commonName="No animal detected", confidence=0.0, iucnGuess="DD", isEgg=false.
 - If the subject is a stuffed toy or illustration of an animal, identify the depicted species and set confidence accordingly (treat plushies as their real species but cap confidence around 0.6).
 - iucnGuess is your best estimate; we will not use it for legal claims.
+- isEgg: set TRUE when the photo's primary subject is an egg (chicken egg in a carton, decorated egg, bird's nest with visible eggs, painted/Easter egg, etc.). The egg path takes priority over species ID — even if a parent bird is visible nearby with the egg, set isEgg=true. The user's app starts a 3-7 day incubation timer when isEgg is true. When isEgg=true, set commonName="Speckled Egg", latinName="Ovum incognitum", confidence=0.85, iucnGuess="LC". Otherwise FALSE.
 
 Respond with JSON only. No markdown fences. No commentary.`;
 
@@ -48,6 +50,9 @@ interface IdentifyResult {
   latinName: string;
   confidence: number;
   iucnGuess: "LC" | "NT" | "VU" | "EN" | "CR" | "EW" | "EX" | "DD";
+  /** F1 (2026-04-25): true if the photo's subject is an egg. Drives the
+   *  Easter-egg incubation flow on the client. Defaults to false. */
+  isEgg: boolean;
 }
 
 function isCuratedId(id: unknown): id is string {
@@ -65,7 +70,8 @@ function parseModelResponse(text: string): IdentifyResult {
     typeof parsed.iucnGuess === "string" && /^(LC|NT|VU|EN|CR|EW|EX|DD)$/.test(parsed.iucnGuess)
       ? (parsed.iucnGuess as IdentifyResult["iucnGuess"])
       : "DD";
-  return { matchedId, commonName, latinName, confidence, iucnGuess };
+  const isEgg = typeof parsed.isEgg === "boolean" ? parsed.isEgg : false;
+  return { matchedId, commonName, latinName, confidence, iucnGuess, isEgg };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
