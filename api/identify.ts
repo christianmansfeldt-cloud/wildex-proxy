@@ -59,19 +59,43 @@ not met, set "generated": null.
     // fish+amphibians+aquatic mammals=water, forest specialists+small
     // woodland creatures+ground inverts=forest.
   "habitat": string,             // human-readable, ~3-5 words ("urban", "savanna", "alpine forest")
-  "cost": 1 | 2 | 3 | 4 | 5,     // Energy cost — derive from real body mass:
-                                 //   < 1 kg → 1, 1-10 kg → 2, 10-100 kg → 3,
-                                 //   100-500 kg → 4, > 500 kg → 5.
-                                 //   ALSO: any CR or EN species → cost 4 or 5 (legendary tier).
-  "hp": number,                  // Pick within the cost-curve bracket:
+  "rarity": "common" | "uncommon" | "rare" | "legendary",
+                                 // SET THIS FIRST. Derive from iucnGuess:
+                                 //   CR / EN → legendary
+                                 //   VU      → rare
+                                 //   NT      → uncommon
+                                 //   LC      → common (default) — but if the species is
+                                 //            legitimately uncommon to encounter (large
+                                 //            apex predators, rare-color morphs, etc.) you
+                                 //            MAY use uncommon.
+  "cost": 1 | 2 | 3 | 4 | 5,     // SET SECOND, derived from rarity FIRST then refined by
+                                 // body mass within the rarity-legal range. The chain is:
+                                 //   rarity → cost range → real mass picks within range
+                                 //
+                                 // Rarity-legal cost ranges (HARD RULE — out-of-range is
+                                 // clamped client-side and logged as a tuning issue):
+                                 //   common    → cost 1-2
+                                 //   uncommon  → cost 2-3
+                                 //   rare      → cost 3-4
+                                 //   legendary → cost 4-5
+                                 //
+                                 // Within the legal range, refine by real body mass:
+                                 //   < 1 kg     → pick the lower of the range
+                                 //   1-100 kg   → pick the middle
+                                 //   > 100 kg   → pick the upper
+                                 //
+                                 // Examples: a CR Syrian Hamster (small, EN→legendary)
+                                 // is legendary cost 4 (lowest legendary rung). A
+                                 // CR Bengal Tiger (huge, CR→legendary) is legendary
+                                 // cost 5. A common 200kg moose would be… common
+                                 // doesn't allow cost 3+, so bump rarity to uncommon
+                                 // and use cost 3.
+  "hp": number,                  // Pick within the cost-curve bracket for `cost`:
   "attack": number,              //   1c: HP 18-30 / atk 10-15
                                  //   2c: HP 35-45 / atk 18-22
                                  //   3c: HP 50-60 / atk 25-30
                                  //   4c: HP 75-85 / atk 35-40
                                  //   5c: HP 90-110 / atk 40-50
-  "rarity": "common" | "uncommon" | "rare" | "legendary",
-                                 //   CR/EN → legendary, VU → rare, NT → uncommon,
-                                 //   LC → common (cost 1-2) or uncommon (cost 3+)
   "lore": string,                // 40-80 words FIRST PERSON from the species' POV,
                                  //   warm naturalist tone, end on something memorable.
   "conservationNote": string,    // 2-3 sentences with at least one named conservation
