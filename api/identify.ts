@@ -101,8 +101,17 @@ not met, set "generated": null.
   "conservationNote": string,    // 2-3 sentences with at least one named conservation
                                  //   organization or program (real ones — IUCN, WWF,
                                  //   regional trusts, etc.).
-  "location": string,            // ~3-7 words human-readable range
-                                 //   ("Sub-Saharan Africa, savanna + grassland")
+  "location": string,            // GEO ONLY — countries / regions / continents
+                                 //   ("Sub-Saharan Africa", "Indian subcontinent",
+                                 //   "Eastern North America"). NO ecological terms
+                                 //   like "savanna" or "forest" here — those go in
+                                 //   the dedicated "range" field below.
+  "range": string,               // ECOLOGY ONLY — comma list of habitats this
+                                 //   species lives in ("Forest, plains, fresh water",
+                                 //   "Coastal marine, estuaries", "Savanna, scrubland").
+                                 //   Distinct from "location" so the card detail can
+                                 //   render geo + ecology as separate FIELD NOTES rows.
+                                 //   3-6 ecology terms, comma-separated, sentence case.
   "metricsBase": { "heightCm": number, "weightG": number },
                                  //   Real adult body height in cm, weight in grams.
                                  //   Use canonical adult averages.
@@ -116,8 +125,8 @@ not met, set "generated": null.
 
 EXAMPLES:
 - Photo of a Pomeranian: matchedId="dog", commonName="Pomeranian", latinName="Canis familiaris", confidence=0.95, iucnGuess="LC", isEgg=false, generated=null. (Curated match → no generated block needed.)
-- Photo of a hamster: matchedId=null, commonName="Syrian Hamster", latinName="Mesocricetus auratus", confidence=0.9, iucnGuess="EN", isEgg=false, generated={type:"land", habitat:"arid grassland + burrow", cost:4, hp:78, attack:36, rarity:"legendary", lore:"...", conservationNote:"...", location:"Aleppo region, Syria — semi-arid steppe", metricsBase:{heightCm:11, weightG:120}, signatureAbility:"burrow"}. (Hamster not in catalogue — generate complete block. EN → legendary; legendary requires cost 4-5; small body picks the lower of the range = cost 4 with HP/atk in the 4c bracket [HP 75-85, atk 35-40]. signatureAbility="burrow" because hamsters are burrowers.)
-- Photo of a Bengal tiger: matchedId=null, commonName="Bengal Tiger", latinName="Panthera tigris tigris", confidence=0.95, iucnGuess="EN", isEgg=false, generated={type:"mythic", habitat:"tropical forest + grassland", cost:5, hp:110, attack:48, rarity:"legendary", lore:"...", conservationNote:"...", location:"Indian subcontinent, mangrove + dry forest", metricsBase:{heightCm:90, weightG:220000}, signatureAbility:"silent_hunt"}. (HP 110 lands at the upper of the 5c bracket [90-110] — apex predator, biggest body, biggest stat.)
+- Photo of a hamster: matchedId=null, commonName="Syrian Hamster", latinName="Mesocricetus auratus", confidence=0.9, iucnGuess="EN", isEgg=false, generated={type:"land", habitat:"arid grassland", cost:4, hp:78, attack:36, rarity:"legendary", lore:"...", conservationNote:"...", location:"Aleppo region, Syria", range:"Arid grassland, steppe, burrows, semi-desert", metricsBase:{heightCm:11, weightG:120}, signatureAbility:"burrow"}. (Hamster not in catalogue — generate complete block. EN → legendary; legendary requires cost 4-5; small body picks the lower of the range = cost 4 with HP/atk in the 4c bracket [HP 75-85, atk 35-40]. signatureAbility="burrow" because hamsters are burrowers. Note location is GEO ONLY; ecology lives in range.)
+- Photo of a Bengal tiger: matchedId=null, commonName="Bengal Tiger", latinName="Panthera tigris tigris", confidence=0.95, iucnGuess="EN", isEgg=false, generated={type:"mythic", habitat:"tropical forest", cost:5, hp:110, attack:48, rarity:"legendary", lore:"...", conservationNote:"...", location:"Indian subcontinent (India, Bangladesh, Nepal, Bhutan)", range:"Mangrove swamp, dry forest, grassland, tropical forest", metricsBase:{heightCm:90, weightG:220000}, signatureAbility:"silent_hunt"}. (HP 110 lands at the upper of the 5c bracket [90-110] — apex predator, biggest body, biggest stat. location is GEO; ecology in range.)
 - Photo of a slightly blurry small bird: matchedId=null, commonName="songbird (uncertain)", latinName="", confidence=0.3, iucnGuess="LC", isEgg=false, generated=null. (Confidence < 0.4 → no generated block; client will fall back.)
 - Photo of a stuffed snow leopard plush: matchedId="snowleopard", commonName="Snow Leopard", latinName="Panthera uncia", confidence=0.6, iucnGuess="VU", isEgg=false, generated=null.
 - Photo of nothing recognizable: matchedId=null, commonName="No animal detected", latinName="", confidence=0.0, iucnGuess="DD", isEgg=false, generated=null.
@@ -139,7 +148,14 @@ interface GeneratedBlock {
   rarity: "common" | "uncommon" | "rare" | "legendary";
   lore: string;
   conservationNote: string;
+  /** Geographic location — countries / regions / continents only. */
   location: string;
+  /** 2026-04-26 v2 (post device QA): ecological range — comma list of
+   *  habitats. Distinct from `location` (geo) so the card detail can
+   *  render geo + ecology as separate FIELD NOTES rows.
+   *  Optional in the wire shape so older cached responses don't break;
+   *  client falls back to a humanized form of `habitat` when missing. */
+  range?: string;
   metricsBase: { heightCm: number; weightG: number };
   signatureAbility: "frostbite" | "horn_charge" | "silent_hunt" | "burrow" | "tail_whip" | null;
 }
@@ -195,6 +211,14 @@ function parseGenerated(raw: unknown): GeneratedBlock | null {
   if (typeof g.lore !== "string" || g.lore.length < 20) return null;
   if (typeof g.conservationNote !== "string" || g.conservationNote.length < 20) return null;
   if (typeof g.location !== "string" || g.location.length === 0) return null;
+  // 2026-04-26 v2: range is optional for back-compat with pre-v2 cached
+  // responses. When present, must be non-empty string. Client falls back
+  // to humanized habitat when missing.
+  let range: string | undefined;
+  if (g.range !== undefined) {
+    if (typeof g.range !== "string" || g.range.length === 0) return null;
+    range = g.range;
+  }
   const m = g.metricsBase as { heightCm?: unknown; weightG?: unknown } | undefined;
   if (
     !m ||
@@ -226,6 +250,7 @@ function parseGenerated(raw: unknown): GeneratedBlock | null {
     lore: g.lore,
     conservationNote: g.conservationNote,
     location: g.location,
+    ...(range !== undefined ? { range } : {}),
     metricsBase: { heightCm: m.heightCm, weightG: m.weightG },
     signatureAbility,
   };
