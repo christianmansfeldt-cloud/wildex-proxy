@@ -29,9 +29,21 @@ function getRatelimit(): Ratelimit | null {
 
 export async function checkRateLimit(ip: string): Promise<{ ok: boolean; remaining: number }> {
   const rl = getRatelimit();
+  // No Redis configured: fail-OPEN (matches checkBudget's no-config branch).
+  // This is a deployment concern — missing env vars shouldn't 429 every request
+  // in dev. In prod the env vars MUST be set; deployment-time checks catch this.
   if (!rl) return { ok: true, remaining: 999 };
-  const { success, remaining } = await rl.limit(ip);
-  return { ok: success, remaining };
+  // Redis configured but call errors (network blip, quota exhaustion, partial
+  // outage): fail-CLOSED. Aligns with checkBudget's catch branch — when the
+  // backend is misbehaving, deny rather than risk abuse. Caller in
+  // api/identify.ts already returns 429 on !ok.
+  // 2026-04-25 P2 fix (post qa-review): was fail-OPEN here, abusable.
+  try {
+    const { success, remaining } = await rl.limit(ip);
+    return { ok: success, remaining };
+  } catch {
+    return { ok: false, remaining: 0 };
+  }
 }
 
 const DAILY_BUDGET_USD = Number(process.env.MAX_DAILY_USD ?? "25");

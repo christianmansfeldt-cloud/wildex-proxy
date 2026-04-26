@@ -28,7 +28,7 @@ THE TASK (in order):
 1. Look at the photo. Identify what species the subject actually is, using your full vision knowledge — pretend the catalogue below doesn't exist for this step. Pick the SPECIFIC species, not a category. ("Golden Retriever" not "dog", "Mallard" not "duck", "House Sparrow" not "bird".)
 2. Set commonName + latinName to that species. These are ALWAYS what you actually see — they describe the subject regardless of whether the catalogue matches.
 3. Set confidence = how certain you are about the species ID. 0.9+ = obvious, 0.6-0.8 = good guess, 0.4-0.6 = unsure between similar species, <0.4 = really not sure or photo is too poor to tell.
-4. Check the curated catalogue below. If the species you identified IS one of these 30, set matchedId to its catalogue id. If it ISN'T (e.g., you saw a hamster or a parakeet), set matchedId=null. The catalogue is for matching, NOT for forcing — never warp your species ID just to match a catalogue entry.
+4. Check the curated catalogue below. If the species you identified IS one of these 33, set matchedId to its catalogue id. If it ISN'T (e.g., you saw a hamster or a parakeet), set matchedId=null. The catalogue is for matching, NOT for forcing — never warp your species ID just to match a catalogue entry.
 5. Set iucnGuess based on your knowledge of the species (LC for common, EN/CR for endangered, etc.). Best guess; not legally binding.
 6. Set isEgg per the rule at the bottom.
 
@@ -90,7 +90,7 @@ not met, set "generated": null.
                                  // cost 5. A common 200kg moose would be… common
                                  // doesn't allow cost 3+, so bump rarity to uncommon
                                  // and use cost 3.
-  "hp": number,                  // Pick within the cost-curve bracket for `cost`:
+  "hp": number,                  // Pick within the cost-curve bracket for \`cost\`:
   "attack": number,              //   1c: HP 18-30 / atk 10-15
                                  //   2c: HP 35-45 / atk 18-22
                                  //   3c: HP 50-60 / atk 25-30
@@ -116,8 +116,8 @@ not met, set "generated": null.
 
 EXAMPLES:
 - Photo of a Pomeranian: matchedId="dog", commonName="Pomeranian", latinName="Canis familiaris", confidence=0.95, iucnGuess="LC", isEgg=false, generated=null. (Curated match → no generated block needed.)
-- Photo of a hamster: matchedId=null, commonName="Syrian Hamster", latinName="Mesocricetus auratus", confidence=0.9, iucnGuess="EN", isEgg=false, generated={type:"land", habitat:"arid grassland + burrow", cost:1, hp:24, attack:13, rarity:"legendary", lore:"...", conservationNote:"...", location:"Aleppo region, Syria — semi-arid steppe", metricsBase:{heightCm:11, weightG:120}, signatureAbility:"burrow"}. (Hamster not in catalogue — generate complete block. Note signatureAbility="burrow" because hamsters are burrowers and rarity=legendary because EN.)
-- Photo of a Bengal tiger: matchedId=null, commonName="Bengal Tiger", latinName="Panthera tigris tigris", confidence=0.95, iucnGuess="EN", isEgg=false, generated={type:"mythic", habitat:"tropical forest + grassland", cost:5, hp:100, attack:48, rarity:"legendary", lore:"...", conservationNote:"...", location:"Indian subcontinent, mangrove + dry forest", metricsBase:{heightCm:90, weightG:220000}, signatureAbility:"silent_hunt"}.
+- Photo of a hamster: matchedId=null, commonName="Syrian Hamster", latinName="Mesocricetus auratus", confidence=0.9, iucnGuess="EN", isEgg=false, generated={type:"land", habitat:"arid grassland + burrow", cost:4, hp:78, attack:36, rarity:"legendary", lore:"...", conservationNote:"...", location:"Aleppo region, Syria — semi-arid steppe", metricsBase:{heightCm:11, weightG:120}, signatureAbility:"burrow"}. (Hamster not in catalogue — generate complete block. EN → legendary; legendary requires cost 4-5; small body picks the lower of the range = cost 4 with HP/atk in the 4c bracket [HP 75-85, atk 35-40]. signatureAbility="burrow" because hamsters are burrowers.)
+- Photo of a Bengal tiger: matchedId=null, commonName="Bengal Tiger", latinName="Panthera tigris tigris", confidence=0.95, iucnGuess="EN", isEgg=false, generated={type:"mythic", habitat:"tropical forest + grassland", cost:5, hp:110, attack:48, rarity:"legendary", lore:"...", conservationNote:"...", location:"Indian subcontinent, mangrove + dry forest", metricsBase:{heightCm:90, weightG:220000}, signatureAbility:"silent_hunt"}. (HP 110 lands at the upper of the 5c bracket [90-110] — apex predator, biggest body, biggest stat.)
 - Photo of a slightly blurry small bird: matchedId=null, commonName="songbird (uncertain)", latinName="", confidence=0.3, iucnGuess="LC", isEgg=false, generated=null. (Confidence < 0.4 → no generated block; client will fall back.)
 - Photo of a stuffed snow leopard plush: matchedId="snowleopard", commonName="Snow Leopard", latinName="Panthera uncia", confidence=0.6, iucnGuess="VU", isEgg=false, generated=null.
 - Photo of nothing recognizable: matchedId=null, commonName="No animal detected", latinName="", confidence=0.0, iucnGuess="DD", isEgg=false, generated=null.
@@ -179,9 +179,15 @@ function parseGenerated(raw: unknown): GeneratedBlock | null {
     !["land", "air", "water", "forest", "mythic"].includes(type)
   ) return null;
   if (typeof g.habitat !== "string" || g.habitat.length === 0) return null;
-  if (typeof g.cost !== "number" || ![1, 2, 3, 4, 5].includes(g.cost)) return null;
-  if (typeof g.hp !== "number" || g.hp <= 0 || g.hp > 250) return null;
-  if (typeof g.attack !== "number" || g.attack <= 0 || g.attack > 100) return null;
+  // P6 (post qa-review): explicit Number.isFinite to reject NaN/Infinity
+  // (typeof NaN === "number" passes the type check otherwise).
+  if (typeof g.cost !== "number" || !Number.isFinite(g.cost) || ![1, 2, 3, 4, 5].includes(g.cost)) return null;
+  // P6 (post qa-review): tighten hp ceiling 250 → 150. Cost-curve max is
+  // 110 (5c upper); 150 leaves a 40-pt buffer for Opus drift but rejects
+  // wild outliers before they reach the cache. Mirrors the client-side
+  // guard in services/claude.ts.
+  if (typeof g.hp !== "number" || !Number.isFinite(g.hp) || g.hp <= 0 || g.hp > 150) return null;
+  if (typeof g.attack !== "number" || !Number.isFinite(g.attack) || g.attack <= 0 || g.attack > 100) return null;
   if (
     typeof g.rarity !== "string" ||
     !["common", "uncommon", "rare", "legendary"].includes(g.rarity)
@@ -192,8 +198,8 @@ function parseGenerated(raw: unknown): GeneratedBlock | null {
   const m = g.metricsBase as { heightCm?: unknown; weightG?: unknown } | undefined;
   if (
     !m ||
-    typeof m.heightCm !== "number" || m.heightCm <= 0 ||
-    typeof m.weightG !== "number" || m.weightG <= 0
+    typeof m.heightCm !== "number" || !Number.isFinite(m.heightCm) || m.heightCm <= 0 ||
+    typeof m.weightG !== "number" || !Number.isFinite(m.weightG) || m.weightG <= 0
   ) return null;
   let signatureAbility: GeneratedBlock["signatureAbility"] = null;
   if (
@@ -201,6 +207,14 @@ function parseGenerated(raw: unknown): GeneratedBlock | null {
     ["frostbite", "horn_charge", "silent_hunt", "burrow", "tail_whip"].includes(g.signatureAbility)
   ) {
     signatureAbility = g.signatureAbility as GeneratedBlock["signatureAbility"];
+  }
+  // 2026-04-26 P1 fix (post QA): the prompt says "signatureAbility ONLY
+  // for legendary tier (cost 4 or 5)". Opus drift sometimes returns one
+  // on a common species. Hard-gate here so a generated common Wilder
+  // can never inherit Snow Leopard's Frostbite mechanics. Mirror gate
+  // also lives client-side in services/claude.ts (defense in depth).
+  if (g.rarity !== "legendary" || typeof g.cost !== "number" || g.cost < 4) {
+    signatureAbility = null;
   }
   return {
     type: type as GeneratedBlock["type"],
