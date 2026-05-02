@@ -292,9 +292,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const ip = clientIp(req);
   const rl = await checkRateLimit(ip);
   if (!rl.ok) {
-    res.status(429).json({ error: "rate_limited" });
+    // 2026-04-27: include remaining count + a retry-after hint so the
+    // client can give the player a useful error rather than just "429".
+    res.setHeader("x-ratelimit-remaining", String(rl.remaining));
+    res.setHeader("retry-after", "3600"); // sliding window is 1 h
+    res.status(429).json({
+      error: "rate_limited",
+      remaining: rl.remaining,
+      retryAfterSec: 3600,
+    });
     return;
   }
+  res.setHeader("x-ratelimit-remaining", String(rl.remaining));
 
   const budget = await checkBudget(ESTIMATED_COST_PER_CALL_USD);
   if (!budget.ok) {

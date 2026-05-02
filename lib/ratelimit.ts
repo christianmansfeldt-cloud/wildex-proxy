@@ -18,9 +18,15 @@ function getRatelimit(): Ratelimit | null {
   if (_ratelimit) return _ratelimit;
   const redis = getRedis();
   if (!redis) return null;
+  // 2026-04-27 (post device QA — user hit 429 in dev): bumped from
+  // 60/hr to 200/hr per IP. The DAILY_BUDGET_USD ($25 / ~$0.09 per
+  // call ≈ 278 calls/day) is the real ceiling. The hourly rate limit
+  // is just abuse insurance — 200/hr still bounds a single-IP attack
+  // to <5k/day before the budget cap also kicks in. Comfortably room
+  // for dev testing + hackathon demo without false 429s.
   _ratelimit = new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(60, "1 h"),
+    limiter: Ratelimit.slidingWindow(200, "1 h"),
     analytics: false,
     prefix: "wildex:rl",
   });
