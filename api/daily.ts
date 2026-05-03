@@ -103,7 +103,8 @@ async function readTopAndMine(
     // ZRANGE with WITHSCORES + REV=false (default ascending = lower-is-better top).
     redis.zrange<(string | number)[]>(key, 0, TOP_N - 1, { withScores: true }),
     myHandle ? redis.zrank(key, myHandle) : Promise.resolve(null),
-    myHandle ? redis.zscore<number>(key, myHandle) : Promise.resolve(null),
+    // @upstash/redis 1.37+ tightened zscore generic; let TS infer + cast at use.
+    myHandle ? redis.zscore(key, myHandle) : Promise.resolve(null),
     redis.zcard(key),
   ]);
 

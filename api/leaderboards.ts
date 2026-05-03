@@ -35,6 +35,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Redis } from "@upstash/redis";
 import { checkRateLimit, clientIp } from "../lib/ratelimit.js";
+import { getSupabase } from "../lib/supabase.js";
 
 const TOP_N = 100;
 
@@ -83,6 +84,27 @@ function isValidScore(raw: unknown): raw is number {
   return Math.floor(raw) === raw;
 }
 
+/** Phase 6 (2026-05-03): given a player's handle, fetch their friend
+ *  set from Supabase. Returns a Set<string> for O(1) membership tests
+ *  inside the friends-scope filter below. Always includes the caller
+ *  themselves so they appear on their own friends-scoped board. */
+async function fetchFriendSet(myHandle: string): Promise<Set<string>> {
+  const supabase = getSupabase();
+  if (!supabase) return new Set([myHandle]);
+  try {
+    const [{ data: asA }, { data: asB }] = await Promise.all([
+      supabase.from("friends").select("handle_b").eq("handle_a", myHandle),
+      supabase.from("friends").select("handle_a").eq("handle_b", myHandle),
+    ]);
+    const out = new Set<string>([myHandle]);
+    for (const r of asA ?? []) out.add((r as { handle_b: string }).handle_b);
+    for (const r of asB ?? []) out.add((r as { handle_a: string }).handle_a);
+    return out;
+  } catch {
+    return new Set([myHandle]);
+  }
+}
+
 async function readDimSnapshot(
   redis: Redis,
   dim: Dimension,
@@ -99,7 +121,8 @@ async function readDimSnapshot(
   const [topRaw, myRankRaw, myScoreRaw, total] = await Promise.all([
     redis.zrange<(string | number)[]>(key, 0, TOP_N - 1, { rev: true, withScores: true }),
     myHandle ? redis.zrevrank(key, myHandle) : Promise.resolve(null),
-    myHandle ? redis.zscore<number>(key, myHandle) : Promise.resolve(null),
+    // @upstash/redis 1.37+ tightened zscore generic; let TS infer + cast at use.
+    myHandle ? redis.zscore(key, myHandle) : Promise.resolve(null),
     redis.zcard(key),
   ]);
 
@@ -136,6 +159,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   if (req.method === "GET") {
     const dim = typeof req.query.dim === "string" ? req.query.dim : "";
     const myHandle = typeof req.query.handle === "string" ? req.query.handle : null;
+    // Phase 6 (2026-05-03): scope=friends restricts the leaderboard to
+    // the caller's friend set + the caller themselves. Same dimension
+    // semantics; the filter is applied to the ZRANGE result.
+    const scope =
+      typeof req.query.scope === "string" && req.query.scope === "friends"
+        ? "friends"
+        : "global";
     if (!isValidDimension(dim)) {
       res.status(400).json({ error: "invalid_dimension" });
       return;
@@ -144,10 +174,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       res.status(400).json({ error: "invalid_handle" });
       return;
     }
+    if (scope === "friends" && myHandle === null) {
+      res.status(400).json({ error: "scope_requires_handle" });
+      return;
+    }
     try {
       const snap = await readDimSnapshot(redis, dim, myHandle);
+      if (scope === "friends" && myHandle) {
+        // Filter the global top-100 to friends only. Re-rank within the
+        // filtered set so #1 is the highest-scoring friend (not the
+        // friend's global rank). myRank/myScore from the snapshot stay
+        // meaningful as the player's GLOBAL position; scoped re-ranking
+        // is purely for the friends-list display.
+        const friendSet = await fetchFriendSet(myHandle);
+        const filtered = snap.top
+          .filter((e) => friendSet.has(e.handle))
+          .map((e, i) => ({ ...e, rank: i + 1 }));
+        // For "myRank" in friends scope: position within the filtered
+        // set (or null if the caller doesn't appear in the filtered
+        // top-100). myFriendRank = caller's position among friends.
+        const myFriendRank =
+          filtered.find((e) => e.handle === myHandle)?.rank ?? null;
+        res.setHeader("cache-control", "public, max-age=60");
+        res.status(200).json({
+          dim,
+          scope: "friends",
+          top: filtered,
+          myRank: myFriendRank,
+          myScore: snap.myScore,
+          total: filtered.length,
+        });
+        return;
+      }
       res.setHeader("cache-control", "public, max-age=60");
-      res.status(200).json({ dim, ...snap });
+      res.status(200).json({ dim, scope: "global", ...snap });
     } catch {
       res.status(502).json({ error: "redis_read_failed" });
     }
