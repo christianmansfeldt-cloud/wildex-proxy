@@ -5,10 +5,12 @@ import { checkBudget, checkRateLimit, clientIp } from "../lib/ratelimit.js";
 
 const MODEL = "claude-opus-4-7";
 // 2026-04-26 H3: bumped 400 → 900 to fit the optional `generated` block
-// (lore 40-80 words + conservation 2-3 sentences + stat fields). For
-// curated matches the response stays small; only un-curated species
-// emit the longer generated block.
-const MAX_TOKENS = 900;
+// (lore 40-80 words + conservation 2-3 sentences + stat fields).
+// 2026-05-05 (fraud Tier 1+2): bumped 900 → 1000 to fit the new
+// isScreenshot + isPrintedPhoto + geoCheck fields. For curated matches
+// the response stays small; only un-curated species + fraud-flagged
+// captures use the upper end.
+const MAX_TOKENS = 1000;
 // Slight bump from 0.06 because the generated branch can roughly double
 // the output token count. Daily budget cap (env: MAX_DAILY_USD) still
 // fail-closes if a player rapidly photographs many new species.
@@ -25,12 +27,22 @@ const ANTHROPIC_TIMEOUT_MS = 25_000;
 const SYSTEM_PROMPT = `You are Wildex, a naturalist identifier for a mobile card-trading game.
 
 THE TASK (in order):
+0. FRAUD CHECK FIRST. Before identifying anything, check whether the photo is genuinely a real-world photograph of an animal:
+   - isScreenshot: TRUE if the image looks like a photograph OF a digital screen (phone display, computer monitor, TV). Tell-tale signs: visible moiré pattern, pixel grid, screen bezel/frame visible, unnatural color cast (saturated blues from LCD), specular reflection on glass surface. Be STRICT — if you see any of these, set true. Avoiding false positives matters less than catching fraud.
+   - isPrintedPhoto: TRUE if the image looks like a photograph OF a printed image (magazine page, framed photograph, calendar, art print, book illustration). Tell-tale signs: visible paper texture, halftone dots, printed page borders, glossy magazine sheen, frame edges visible.
+   - When EITHER of those is true: still attempt the species ID below (so the client can show what the player tried to capture), but the client will hard-reject the capture before awarding XP.
 1. Look at the photo. Identify what species the subject actually is, using your full vision knowledge — pretend the catalogue below doesn't exist for this step. Pick the SPECIFIC species, not a category. ("Golden Retriever" not "dog", "Mallard" not "duck", "House Sparrow" not "bird".)
 2. Set commonName + latinName to that species. These are ALWAYS what you actually see — they describe the subject regardless of whether the catalogue matches.
 3. Set confidence = how certain you are about the species ID. 0.9+ = obvious, 0.6-0.8 = good guess, 0.4-0.6 = unsure between similar species, <0.4 = really not sure or photo is too poor to tell.
 4. Check the curated catalogue below. Each entry has a \`matches\` rule describing what real-world species count as that catalogue id (e.g., "dog" matches any domestic breed, "deer" matches any small/medium deer including roe/sika/fallow but NOT moose/elk, "fox" matches any true fox INCLUDING fennec but NOT coyote/wolf). If the species you identified satisfies a \`matches\` rule, set matchedId to that catalogue id. The commonName + latinName fields ALWAYS describe the actual subject regardless — a Roe Deer captured under matchedId="deer" still has commonName="Roe Deer" + latinName="Capreolus capreolus". If no \`matches\` rule applies (e.g., you saw a hamster, a moose, a coyote, a parakeet), set matchedId=null. The catalogue is for matching, NOT for forcing — never warp your species ID just to fit a rule, and respect the explicit NOT clauses.
 5. Set iucnGuess based on your knowledge of the species (LC for common, EN/CR for endangered, etc.). Best guess; not legally binding.
 6. Set isEgg per the rule at the bottom.
+7. GEO PLAUSIBILITY (only when geoLat + geoLng are provided in the user message AND you identified a species AND it's not a domestic / global-range species like a dog, cat, pigeon, or sparrow): set the geoCheck object based on whether the species' real-world native range includes the capture location.
+   - plausibility: "plausible" if the location is INSIDE the species' known native or naturalized range. "edge" if WITHIN ~250km of the range edge (zoos, displaced individuals, migration corridors). "implausible" if MORE than ~1000km outside any known wild range. Be generous on "plausible" — many species have wider ranges than memory suggests.
+   - nativeRange: a 1-sentence description of where the species actually lives, used in the rejection message ("Snow Leopards live in the high mountains of Central Asia.")
+   - distanceKmHint: rough km from capture location to nearest known range edge. Approximate is fine; the client just uses it as a sanity check.
+   - For DOMESTIC / GLOBAL-RANGE species (dogs, cats, house sparrows, pigeons, rats, honey bees) ALWAYS set plausibility="plausible" — they live with humans everywhere.
+   - When geoLat / geoLng are NOT provided, OR confidence < 0.4, OR isEgg=true, OR isScreenshot/isPrintedPhoto=true, set geoCheck=null.
 
 CURATED CATALOGUE (33 species — for matchedId only):
 ${CURATED_SPECIES_BLOCK}
@@ -43,6 +55,13 @@ RESPONSE SHAPE — single JSON object, no markdown, no commentary:
   "confidence": number,         // 0.0 to 1.0
   "iucnGuess": "LC" | "NT" | "VU" | "EN" | "CR" | "EW" | "EX" | "DD",
   "isEgg": boolean,
+  "isScreenshot": boolean,      // step 0 fraud check
+  "isPrintedPhoto": boolean,    // step 0 fraud check
+  "geoCheck": null | {          // step 7, null when geo not provided / not applicable
+    "plausibility": "plausible" | "edge" | "implausible",
+    "nativeRange": string,      // 1 sentence — used in client rejection copy
+    "distanceKmHint": number    // rough km to nearest range edge, 0 if inside
+  },
   "generated": null | { /* see GENERATED BLOCK below */ }
 }
 
@@ -165,6 +184,17 @@ interface GeneratedBlock {
   signatureAbility: "frostbite" | "horn_charge" | "silent_hunt" | "burrow" | "tail_whip" | null;
 }
 
+/** 2026-05-05 (fraud Tier 2): geo-plausibility verdict from Opus. Set
+ *  only when the client passed geoLat + geoLng AND a species was
+ *  identified at confidence >= 0.4 AND it's not a domestic / global-
+ *  range species. Client uses `plausibility === "implausible" &&
+ *  distanceKmHint > 1000` to hard-reject. */
+interface GeoCheck {
+  plausibility: "plausible" | "edge" | "implausible";
+  nativeRange: string;
+  distanceKmHint: number;
+}
+
 interface IdentifyResult {
   matchedId: string | null;
   commonName: string;
@@ -174,12 +204,42 @@ interface IdentifyResult {
   /** F1 (2026-04-25): true if the photo's subject is an egg. Drives the
    *  Easter-egg incubation flow on the client. Defaults to false. */
   isEgg: boolean;
+  /** 2026-05-05 (fraud Tier 1): true if Opus thinks the photo is OF a
+   *  digital screen (phone, monitor, TV). Client hard-rejects. */
+  isScreenshot: boolean;
+  /** 2026-05-05 (fraud Tier 1): true if Opus thinks the photo is OF a
+   *  printed image (magazine, framed photo, calendar). Client hard-rejects. */
+  isPrintedPhoto: boolean;
+  /** 2026-05-05 (fraud Tier 2): geo-plausibility verdict. null when no
+   *  geo was provided or check wasn't applicable (low confidence /
+   *  egg / domestic species / fraud-flagged). */
+  geoCheck: GeoCheck | null;
   /** H3 (2026-04-26): for un-curated species (matchedId=null) Opus
    *  generates complete game-ready stats. null when the species
    *  matched the curated list, when confidence is too low, or when
    *  the photo was an egg. Client validates + clamps stats to the
    *  cost-curve before rendering. */
   generated: GeneratedBlock | null;
+}
+
+/** 2026-05-05: parse + validate the geoCheck block. Returns null on
+ *  any shape mismatch — fraud rejection should never block on a
+ *  malformed geo response. */
+function parseGeoCheck(raw: unknown): GeoCheck | null {
+  if (!raw || typeof raw !== "object") return null;
+  const g = raw as Record<string, unknown>;
+  const p = g.plausibility;
+  if (typeof p !== "string" || !["plausible", "edge", "implausible"].includes(p)) {
+    return null;
+  }
+  if (typeof g.nativeRange !== "string" || g.nativeRange.length === 0) return null;
+  const d = g.distanceKmHint;
+  if (typeof d !== "number" || !Number.isFinite(d) || d < 0) return null;
+  return {
+    plausibility: p as GeoCheck["plausibility"],
+    nativeRange: g.nativeRange,
+    distanceKmHint: d,
+  };
 }
 
 function isCuratedId(id: unknown): id is string {
@@ -273,6 +333,13 @@ function parseModelResponse(text: string): IdentifyResult {
       ? (parsed.iucnGuess as IdentifyResult["iucnGuess"])
       : "DD";
   const isEgg = typeof parsed.isEgg === "boolean" ? parsed.isEgg : false;
+  // 2026-05-05 (fraud Tier 1): default to false when missing so legacy
+  // cached entries / Opus drift fall through to "not flagged".
+  const isScreenshot = typeof parsed.isScreenshot === "boolean" ? parsed.isScreenshot : false;
+  const isPrintedPhoto = typeof parsed.isPrintedPhoto === "boolean" ? parsed.isPrintedPhoto : false;
+  // 2026-05-05 (fraud Tier 2): parse geoCheck. null when not provided
+  // or when the prompt's gate conditions weren't met.
+  const geoCheck = parseGeoCheck(parsed.geoCheck);
   // Only accept a generated block when the species was un-curated AND
   // confidence is high enough AND it wasn't an egg. Any of those false
   // → drop the block. Defense against Opus over-generating.
@@ -280,7 +347,18 @@ function parseModelResponse(text: string): IdentifyResult {
     matchedId === null && confidence >= 0.4 && !isEgg
       ? parseGenerated(parsed.generated)
       : null;
-  return { matchedId, commonName, latinName, confidence, iucnGuess, isEgg, generated };
+  return {
+    matchedId,
+    commonName,
+    latinName,
+    confidence,
+    iucnGuess,
+    isEgg,
+    isScreenshot,
+    isPrintedPhoto,
+    geoCheck,
+    generated,
+  };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -311,7 +389,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  const body = (req.body ?? {}) as { imageBase64?: string; mediaType?: string };
+  const body = (req.body ?? {}) as {
+    imageBase64?: string;
+    mediaType?: string;
+    /** 2026-05-05 (fraud Tier 2): optional capture location. When
+     *  provided + confidence >= 0.4 + species is non-domestic, Opus
+     *  emits a geoCheck verdict. Validated as finite numbers in
+     *  WGS84 degree ranges. */
+    geoLat?: number;
+    geoLng?: number;
+  };
   const imageBase64 = body.imageBase64;
   if (typeof imageBase64 !== "string" || imageBase64.length < 100) {
     res.status(400).json({ error: "missing_image" });
@@ -325,6 +412,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   if (!/^image\/(jpeg|png|webp|gif)$/.test(mediaType)) {
     res.status(415).json({ error: "unsupported_media_type" });
     return;
+  }
+  // 2026-05-05: validate optional geo. Only forward to Opus when both
+  // values are valid finite numbers in legal WGS84 ranges. Anything
+  // off → silently drop (no geoCheck in response, capture proceeds
+  // without geo gating).
+  let geoLat: number | null = null;
+  let geoLng: number | null = null;
+  if (
+    typeof body.geoLat === "number" && Number.isFinite(body.geoLat) &&
+    body.geoLat >= -90 && body.geoLat <= 90 &&
+    typeof body.geoLng === "number" && Number.isFinite(body.geoLng) &&
+    body.geoLng >= -180 && body.geoLng <= 180
+  ) {
+    geoLat = body.geoLat;
+    geoLng = body.geoLng;
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -367,7 +469,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
                   data: imageBase64,
                 },
               },
-              { type: "text", text: "Identify the animal in this photo. JSON only." },
+              {
+                type: "text",
+                // 2026-05-05 (fraud Tier 2): when geo is available we
+                // append it to the user prompt so Opus has the
+                // capture location for its geoCheck verdict. Format:
+                // "geoLat=37.77, geoLng=-122.41". When absent the
+                // geoCheck step is skipped per the system prompt.
+                text:
+                  geoLat !== null && geoLng !== null
+                    ? `Identify the animal in this photo. Capture location: geoLat=${geoLat.toFixed(4)}, geoLng=${geoLng.toFixed(4)}. JSON only.`
+                    : "Identify the animal in this photo. JSON only.",
+              },
             ],
           },
         ],
